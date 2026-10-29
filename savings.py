@@ -1,6 +1,6 @@
 # What is the forecast worth? Simulates a year of EV charging with four strategies, at the real consumer price (spot × 1.25 + add).
 # usage: python3 elprisprognos/savings.py   (uses cache/ from run.py backtest)
-import datetime as dt, json, os, sys
+import datetime as dt, json, math, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, os.path.join(HERE, "custom_components", "elprisprognos"))
 import prognos as P
 sys.path.insert(0, HERE); import run
@@ -11,32 +11,37 @@ VAT, ADD = 1.25, 0.71
 DAILY = KWH_YEAR / 365                          # ponytail: driving as a steady daily draw at 08:00; real trips are lumpier
 
 def plan(hours, price, e0, use):
-    """Cheapest-first charging over `hours` so the battery never drops below E_MIN or exceeds E_MAX. Returns {hour: kWh}."""
+    """Charging over `hours` so the battery stays ≥ E_MIN, ≤ E_MAX and ends at TARGET: fix the earliest shortfall with the
+    cheapest earlier hour that still has room under the cap. Returns {hour: kWh}."""
     ch = {h: 0.0 for h in hours}
-    def ok():
-        e = e0
-        for h in hours:
-            e += ch[h] - use.get(h, 0)
-            if e > E_MAX + 1e-6: return False   # only the ceiling here; the floor is what need() keeps buying for
-        return True
-    def need():   # below the floor at some point, or not back at 60 % at the end of the horizon (keeps the buffer)
+    while hours:
         lv = list(_levels(hours, ch, e0, use))
-        return any(e < E_MIN - 1e-6 for e in lv) or (lv and lv[-1] < TARGET - 1e-6)
-    for h in sorted(hours, key=lambda h: price[h]):
-        if not need(): break
-        ch[h] = RATE
-        if not ok():   # too much for the cap: charge only what fits
-            ch[h] = 0.0; lo, hi = 0.0, RATE
-            for _ in range(20):
-                ch[h] = (lo + hi) / 2
-                lo, hi = (ch[h], hi) if ok() else (lo, ch[h])
-            ch[h] = lo
+        bad = next((i for i, e in enumerate(lv) if e < E_MIN - 1e-6), None)
+        if bad is not None: short = E_MIN - lv[bad]
+        elif lv[-1] < TARGET - 1e-6: bad, short = len(lv) - 1, TARGET - lv[-1]
+        else: break
+        room = lambda i: E_MAX - max(lv[i:])
+        cand = [i for i in range(bad + 1) if ch[hours[i]] < RATE - 1e-6 and room(i) > 1e-6]
+        if not cand: break   # nothing left that helps: accept the shortfall
+        i = min(cand, key=lambda i: price[hours[i]])
+        ch[hours[i]] += min(RATE - ch[hours[i]], short, room(i))
     return ch
 
 def _levels(hours, ch, e0, use):
     e = e0
     for h in hours:
         e += ch[h] - use.get(h, 0); yield e
+
+def rule_limit(soc, known, fc, d, trip=60, daily=100 * DAILY / CAP):
+    """Same rule as automations/ev9_ai_laddniva.json (spot prices): charge enough now to last until the first forecast day
+    whose 4 cheapest hours are ≥ 20 % below the 4 cheapest known ones (+10 % margin), never below the trip level, max 90 %."""
+    cheap = lambda v: sum(sorted(v)[:4]) / min(4, len(v))
+    days = {}
+    for h, v in fc.items(): days.setdefault(h[:10], []).append(v)
+    if len(known) < 4 or not days: return trip
+    k = cheap(known)
+    n = next((n for n, v in sorted(((dt.date.fromisoformat(x) - d).days, cheap(v)) for x, v in days.items()) if n <= 6 and v < 0.8 * k), 7)
+    return max(trip, min(90, math.ceil((25 + (n - 1) * daily + 10) / 10) * 10))
 
 def simulate(px, fcs, strategy, days):
     e, cost, kwh = TARGET, 0.0, 0.0
@@ -58,6 +63,13 @@ def simulate(px, fcs, strategy, days):
             for h in sorted(known, key=lambda h: px[h]):
                 if extra <= 0: break
                 add = min(RATE - ch[h], extra); ch[h] += add; extra -= add
+        elif strategy == "regel (automationen)":   # what the EV9 automation does: pick a charge limit, then cheapest known hours
+            kn = [h for h in known if h >= now]
+            if e < 0.35 * CAP: kn = [h for h in kn if h <= f"{d + dt.timedelta(days=1)}T05"]   # < 35 %: 07:30 deadline, no deferring
+            ch = {h: 0.0 for h in H}; need = rule_limit(100 * e / CAP, [px[h] for h in kn], fcs.get(d, {}), d) / 100 * CAP - e
+            for h in sorted(kn, key=lambda h: px[h]):
+                if need <= 0: break
+                ch[h] = min(RATE, need); need -= ch[h]
         else:   # with a 7-day horizon: actual where known, forecast (or perfect foresight) for the rest
             fc = fcs.get(d, {})
             pr = {h: px[h] if h in known else (fc.get(h) if strategy == "med prognos" else px.get(h)) for h in H}
@@ -66,7 +78,7 @@ def simulate(px, fcs, strategy, days):
         for h in H[:24]:   # execute the first 24 h, then re-plan
             if h in px:
                 q = ch.get(h, 0.0); cost += q * (px[h] * VAT + ADD); kwh += q; e += q
-            e -= use.get(h, 0)
+            e -= use.get(h, 0); global LOW; LOW = min(LOW, e)
     return cost, kwh, e
 
 def forecasts(px, wx, days):
@@ -89,8 +101,9 @@ if __name__ == "__main__":
     else: fcs = forecasts(px, wx, days); json.dump({str(k): v for k, v in fcs.items()}, open(fcf, "w"))
     base = None
     print(f"EV-laddning {days[0]} – {days[-1]}, {KWH_YEAR} kWh/år, {RATE} kW, batteri {CAP} kWh (25–90 %):")
-    for s in ("deadline 07:30", "utan deadline, kända priser", "med prognos", "perfekt framförhållning"):
+    for s in ("deadline 07:30", "utan deadline, kända priser", "regel (automationen)", "med prognos", "perfekt framförhållning"):
+        global LOW; LOW = 1e9
         cost, kwh, e = simulate(px, fcs, s, days)
         cost += (TARGET - e) * 1.2   # settle a different end level at ~1.20 kr/kWh so strategies compare fairly
         base = base or cost
-        print(f"  {s:30} {cost:7.0f} kr  {100 * cost / KWH_YEAR:4.0f} öre/kWh  sparar {base - cost:6.0f} kr/år")
+        print(f"  {s:30} {cost:7.0f} kr  {100 * cost / KWH_YEAR:4.0f} öre/kWh  sparar {base - cost:6.0f} kr/år  lägst {100 * LOW / CAP:3.0f} %")
