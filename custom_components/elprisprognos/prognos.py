@@ -1,11 +1,12 @@
 """SE3 spot price forecast, 7 days ahead. No Home Assistant dependency (stdlib + numpy) so it can become an integration.
 
 Data: hourly spot prices from elprisetjustnu.se (SEK/kWh excl. VAT; 15-min prices averaged per hour), weather from Open-Meteo
-(wind at 100 m where the Nordic/German wind farms are, temperature in the big cities, sun over Germany).
+(wind at 100 m where the Nordic/German wind farms are, temperature in the big cities, sun over Germany), Swedish reactor
+outages from Nord Pool's UMM (REMIT) messages.
 Model: ridge regression where every feature also gets a copy scaled by the recent price level, so "windy night" means
 −X % rather than −X öre (the level carries gas prices, hydro balance and season).
 """
-import datetime as dt, json, math, os, urllib.request
+import datetime as dt, json, math, os, time, urllib.request
 from zoneinfo import ZoneInfo
 import numpy as np
 TZ = ZoneInfo("Europe/Stockholm")
@@ -18,8 +19,13 @@ TEMP = [("Stockholm", 59.33, 18.06), ("Oslo", 59.91, 10.75), ("Helsinki", 60.17,
 SUN = [("DE", 51.0, 10.0), ("SE3sun", 58.5, 15.0)]
 UA = {"User-Agent": "elprisprognos/0.1 (Home Assistant)"}
 
-def _get(url):
-    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r: return json.load(r)
+def _get(url, tries=3):
+    for i in range(tries):   # Open-Meteo sometimes answers with an empty body
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r: return json.load(r)
+        except Exception:
+            if i == tries - 1: raise
+            time.sleep(10 * (i + 1))
 
 def prices(start, end, cache=None):
     """{'YYYY-MM-DDTHH' (UTC): SEK/kWh} for start..end (dates, inclusive). Past days are cached as files in `cache`."""
@@ -28,7 +34,7 @@ def prices(start, end, cache=None):
         f = cache and os.path.join(cache, f"{ZONE}_{d}.json")
         if f and os.path.exists(f): day = json.load(open(f))
         else:
-            try: day = _get(f"https://www.elprisetjustnu.se/api/v1/prices/{d:%Y}/{d:%m-%d}_{ZONE}.json")
+            try: day = _get(f"https://www.elprisetjustnu.se/api/v1/prices/{d:%Y}/{d:%m-%d}_{ZONE}.json", tries=1)
             except Exception: day = None   # tomorrow before ~13:00, or a gap
             if f and day and d < dt.date.today(): json.dump(day, open(f, "w"))
         acc = {}
@@ -61,6 +67,45 @@ def weather(start, end, forecast=False):
             if any(name == w[0] for w in SUN): r["s_" + name] = h["shortwave_radiation"][i]
     return out
 
+SE_NUCLEAR = "10Y1001A1001A46L"   # all Swedish reactors are in SE3; their outages move prices in every Swedish area
+
+def umm(history=False):
+    """Nord Pool UMM messages about nuclear units in SE3 (back to 2012): the current version of each, or every version."""
+    out = []
+    while True:
+        page = _get(f"https://ummapi.nordpoolgroup.com/messages?areas={SE_NUCLEAR}&fuelTypes=14&limit=500&skip={len(out)}"
+                    + "&includeOutdated=true" * history)["items"]
+        out += page
+        if len(page) < 500: return out
+
+def nuclear(msgs, start, end, as_of=None):
+    """{'YYYY-MM-DDTHH': MW of reactor capacity out} for UTC hours start..end, from the newest version of each message
+    published by `as_of` (an hour string; None = newest). Overlapping messages for one unit count once (the largest)."""
+    last = {}
+    for m in msgs:
+        if (as_of is None or m["publicationDate"][:13] <= as_of) and m["version"] > last.get(m["messageId"], {"version": -1})["version"]:
+            last[m["messageId"]] = m
+    unit, a0, b0 = {}, dt.datetime.strptime(start, "%Y-%m-%dT%H"), dt.datetime.strptime(end, "%Y-%m-%dT%H")
+    for m in last.values():
+        if m.get("eventStatus") == 3: continue   # dismissed
+        for u in (m.get("productionUnits") or []) + (m.get("generationUnits") or []):
+            key = u.get("productionUnitEic") or u["eic"]
+            for tp in u["timePeriods"]:
+                stop = (tp.get("eventStop") or "9999")[:16]
+                h = max(a0, dt.datetime.strptime(tp["eventStart"][:13], "%Y-%m-%dT%H"))
+                while h <= b0 and f"{h:%Y-%m-%dT%H:%M}" < stop:
+                    k = (key, f"{h:%Y-%m-%dT%H}"); unit[k] = max(unit.get(k, 0), min(tp["unavailableCapacity"], u["installedCapacity"]))
+                    h += dt.timedelta(hours=1)
+    out = {}
+    for (_, h), mw in unit.items(): out[h] = out.get(h, 0) + mw
+    return out
+
+def add_nuclear(wx, msgs, as_of=None):
+    """Put MW of reactors out into every hour of `wx` (key 'nuc')."""
+    n = nuclear(msgs, min(wx), max(wx), as_of) if wx else {}
+    for h, r in wx.items(): r["nuc"] = n.get(h, 0)
+    return wx
+
 def _power(v):   # rough wind turbine power curve, 0..1 (cut-in 3 m/s, rated 12 m/s, cut-out 25 m/s)
     return 0.0 if v is None or v < 3 or v > 25 else min(1.0, (v ** 3 - 27) / (12 ** 3 - 27))
 
@@ -73,7 +118,7 @@ def features(hour, wx, level):
     temp = [wx.get("t_" + n, 5.0) or 0.0 for n, *_ in TEMP]
     sun = [(wx.get("s_" + n) or 0.0) / 800 for n, *_ in SUN]
     x += w + [sum(w) / len(w), (sum(w) / len(w)) ** 2] + [min(c, 15) / 10 for c in temp] + [max(0, -c) / 10 for c in temp]
-    x += sun + [math.cos(2 * math.pi * t.timetuple().tm_yday / 365.25), math.sin(2 * math.pi * t.timetuple().tm_yday / 365.25)]
+    x += sun + [(wx.get("nuc") or 0) / 1000] + [math.cos(2 * math.pi * t.timetuple().tm_yday / 365.25), math.sin(2 * math.pi * t.timetuple().tm_yday / 365.25)]
     x = np.array(x)
     return np.concatenate([x, x * level])   # every effect both in öre and relative to the price level
 
@@ -99,9 +144,9 @@ def predict(model, hours, wx, level):
     b, mu, sd = (np.array(model[k]) for k in ("beta", "mu", "sd"))
     return {h: float(((features(h, wx[h], level) - mu) / sd) @ b) for h in hours if h in wx}
 
-def forecast(model, px, cache=None):
+def forecast(model, px, msgs=()):
     """Next 7 days: real prices where published, the model for the rest. Returns [(utc hour, SEK/kWh spot, is_forecast)]."""
-    wx = weather(None, None, forecast=True)
+    wx = add_nuclear(weather(None, None, forecast=True), msgs)
     last = max(px)
     hours = sorted(h for h in wx if h > last)
     pred = predict(model, hours, wx, _level(px, last))

@@ -15,7 +15,7 @@ class Coordinator(DataUpdateCoordinator):
     """Hourly: refresh prices + weather forecast and predict. Daily: refit the model (a few seconds in the executor)."""
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         super().__init__(hass, _LOG, name=DOMAIN, update_interval=dt.timedelta(hours=1))
-        self.entry, self.model, self.fitted, self.wx_hist = entry, None, None, {}
+        self.entry, self.model, self.fitted, self.wx_hist, self.umm = entry, None, None, {}, []
         self.cache = hass.config.path(".storage", DOMAIN); os.makedirs(self.cache, exist_ok=True)
 
     def _work(self):
@@ -23,11 +23,13 @@ class Coordinator(DataUpdateCoordinator):
         today = dt.date.today()
         px = P.prices(dt.date.fromisoformat(HISTORY_START), today - dt.timedelta(days=1), self.cache)   # cached per day after the first run
         px.update(P.prices(today, today + dt.timedelta(days=1)))
+        try: self.umm = P.umm()   # reactor outages: news within the hour matters
+        except Exception as e: _LOG.warning("Nord Pool UMM unavailable, keeping the last %d messages: %s", len(self.umm), e)
         if self.model is None or self.fitted != today:
             start = dt.date.fromisoformat(max(HISTORY_START, *(k[:10] for k in self.wx_hist))) if self.wx_hist else dt.date.fromisoformat(HISTORY_START)
             self.wx_hist.update(P.weather(start, today - dt.timedelta(days=1)))
-            self.model, self.fitted = P.fit(px, self.wx_hist), today
-        return P.forecast(self.model, px), self.model["n"]
+            self.model, self.fitted = P.fit(px, P.add_nuclear(self.wx_hist, self.umm)), today
+        return P.forecast(self.model, px, self.umm), self.model["n"]
 
     async def _async_update_data(self):
         rows, n = await self.hass.async_add_executor_job(self._work)

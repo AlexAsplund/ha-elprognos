@@ -23,10 +23,11 @@ It works with apexcharts-card `data_generator`, or in automations that plan arou
 - Weather: Open-Meteo.
   - Training uses archived forecasts; prediction uses the live forecast.
   - Inputs: wind at 100 m at 9 wind-farm sites (SE1–SE4, FI, NO2, DK1, N. Germany), temperature in Stockholm/Oslo/Helsinki, and sun over Germany/SE3.
-- Model: ridge regression on hour/weekday/season + weather. Every feature is also scaled by the last 7 days' price level.
+- Reactor outages: Nord Pool UMM (REMIT messages for the SE3 reactors, planned and unplanned, no API key).
+- Model: ridge regression on hour/weekday/season + weather + MW of reactor capacity out. Every feature is also scaled by the last 7 days' price level.
 - The model refits once a day and the forecast updates hourly.
 
-Backtest (SE3, 40 forecasts over a year, days 2–7 ahead): mean error 26 öre/kWh, against 40–42 öre for "same hour last week" or "the 7-day mean". Daily averages correlate 0.88 with the real prices. Training uses archived short-lead weather forecasts, so days 5–7 come out a bit optimistic.
+Backtest (SE3, 40 forecasts over a year, days 2–7 ahead): mean error 25 öre/kWh (25.4 without reactor outages), against 38–41 öre for "same hour last week" or "the 7-day mean". Daily averages correlate 0.88 with the real prices. Training uses archived short-lead weather forecasts, so days 5–7 come out a bit optimistic. Reactor outages are replayed as they were known when each forecast was made.
 
 ## Scripts
 

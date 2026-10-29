@@ -6,23 +6,27 @@ import prognos as P
 CACHE = os.path.join(HERE, "cache"); os.makedirs(CACHE, exist_ok=True)
 START = dt.date(2023, 1, 1)
 
-def data(end):
+def data(end, history=False):
+    """Prices, and weather with reactor outages (final versions; `history` also keeps older versions for as-of replays)."""
     px = P.prices(START, end, CACHE)
     wf = os.path.join(CACHE, f"weather_{START}_{end}.json")
     if not os.path.exists(wf):
         for old in [f for f in os.listdir(CACHE) if f.startswith("weather_")]: os.remove(os.path.join(CACHE, old))
         json.dump(P.weather(START, end), open(wf, "w"))
-    return px, json.load(open(wf))
+    msgs = [] if os.environ.get("NO_NUCLEAR") else P.umm(history)
+    return px, P.add_nuclear(json.load(open(wf)), msgs), msgs
 
 def backtest():
-    end = dt.date.today() - dt.timedelta(days=1); px, wx = data(end)
+    end = dt.date.today() - dt.timedelta(days=1); px, wx, msgs = data(end, history=True)
     err = {k: [] for k in ("modell", "samma timme förra veckan", "7-dagars medel")}; rank = []
     for cut in [end - dt.timedelta(days=d) for d in range(360, 0, -9)]:   # forecast made at the end of `cut`, for cut+2 … cut+7
         known = f"{cut:%Y-%m-%d}T23"
         tr = {h: v for h, v in px.items() if h <= known}
         m = P.fit(tr, wx); lvl = P._level(tr, known)
         hrs = [h for h in px if f"{cut + dt.timedelta(days=2):%Y-%m-%d}" <= h[:10] <= f"{cut + dt.timedelta(days=7):%Y-%m-%d}" and h in wx]
-        pr = P.predict(m, hrs, wx, lvl)
+        # reactor outages as they were known when the forecast was made, not as they turned out
+        nuc = P.nuclear(msgs, min(hrs), max(hrs), as_of=known) if hrs else {}
+        pr = P.predict(m, hrs, {h: {**wx[h], "nuc": nuc.get(h, 0)} for h in hrs}, lvl)
         for h in hrs:
             wk = f"{dt.datetime.strptime(h, '%Y-%m-%dT%H') - dt.timedelta(days=7 * (1 + (dt.datetime.strptime(h, '%Y-%m-%dT%H').date() - cut).days // 7)):%Y-%m-%dT%H}"
             err["modell"].append(abs(pr[h] - px[h])); err["7-dagars medel"].append(abs(lvl - px[h]))
@@ -35,10 +39,10 @@ def backtest():
 
 def publish():
     sys.path.insert(0, os.path.dirname(HERE)); from ws import call
-    end = dt.date.today() + dt.timedelta(days=1); px, wx = data(dt.date.today() - dt.timedelta(days=1))
+    end = dt.date.today() + dt.timedelta(days=1); px, wx, msgs = data(dt.date.today() - dt.timedelta(days=1))
     px.update(P.prices(dt.date.today(), end))   # today + tomorrow (if published) – not cached
     model = P.fit(px, wx)
-    fc = P.forecast(model, px)
+    fc = P.forecast(model, px, msgs)
     nps = [s for s in call({"type": "get_states"})[0]["result"] if s["entity_id"] == "sensor.nordpool_kwh_se3_sek_3_10_025"]
     add = float(nps[0]["attributes"].get("additional_costs_current_hour", 0.71)) if nps else 0.71
     vat = 1.25
