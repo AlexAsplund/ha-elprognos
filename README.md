@@ -31,7 +31,7 @@ Backtest (SE3, 40 forecasts over a year, days 2–7 ahead): mean error 26 öre/k
 ## Scripts
 
 - `python3 run.py backtest`: reproduces the numbers above.
-- `python3 savings.py`: simulates a year of EV charging with four strategies (fixed overnight deadline, known prices only, with forecast, perfect foresight).
+- `python3 savings.py`: simulates a year of EV charging: plain charging on arrival, fixed overnight deadline, known prices only, a simple forecast rule for a charge-limit automation, full planning with the forecast, and perfect foresight. Hours the car is away can be priced out (`AWAY`) to model a commuter.
 - `python3 run.py publish`: alternative to the integration. It posts `sensor.elpris_prognos` over the REST API and needs `HA_URL` and `HA_ACCESS_TOKEN` in the environment.
 
 ## Tests

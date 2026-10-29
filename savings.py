@@ -1,4 +1,4 @@
-# What is the forecast worth? Simulates a year of EV charging with four strategies, at the real consumer price (spot × 1.25 + add).
+# What is the forecast worth? Simulates a year of EV charging with six strategies, at the real consumer price (spot × 1.25 + add).
 # usage: python3 elprisprognos/savings.py   (uses cache/ from run.py backtest)
 import datetime as dt, json, math, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, os.path.join(HERE, "custom_components", "elprisprognos"))
@@ -8,6 +8,8 @@ sys.path.insert(0, HERE); import run
 KWH_YEAR, CAP, RATE = 6160, 99.8, 6.7           # example car: yearly kWh, battery size, charging power – edit to match yours
 E_MIN, E_MAX, TARGET = 0.25 * CAP, 0.9 * CAP, 0.6 * CAP
 VAT, ADD = 1.25, 0.71
+LOW = 1e9
+AWAY = 1e3                                       # price that marks an hour the car is not plugged in
 DAILY = KWH_YEAR / 365                          # ponytail: driving as a steady daily draw at 08:00; real trips are lumpier
 
 def plan(hours, price, e0, use):
@@ -43,7 +45,9 @@ def rule_limit(soc, known, fc, d, trip=60, daily=100 * DAILY / CAP):
     n = next((n for n, v in sorted(((dt.date.fromisoformat(x) - d).days, cheap(v)) for x, v in days.items()) if n <= 6 and v < 0.8 * k), 7)
     return max(trip, min(90, math.ceil((25 + (n - 1) * daily + 10) / 10) * 10))
 
-def simulate(px, fcs, strategy, days):
+def simulate(px, fcs, strategy, days, real=None):
+    """`px` drives the decisions (hours the car is away can be priced out), `real` (default px) is what gets paid."""
+    real = real or px
     e, cost, kwh = TARGET, 0.0, 0.0
     for d in days:   # decide at 13:00 local (≈ 12 UTC) on day d; tomorrow's prices are known then
         now = f"{d}T12"
@@ -51,7 +55,12 @@ def simulate(px, fcs, strategy, days):
         H = [f"{h0 + dt.timedelta(hours=i):%Y-%m-%dT%H}" for i in range(24 * 7)]
         known = [h for h in H if h in px and h[:10] <= f"{d + dt.timedelta(days=1)}"]
         use = {h: DAILY for h in H if h.endswith("T07")}
-        if strategy == "deadline 07:30":   # tonight only: charge back to 60 % between 17:00 and 06:00 UTC
+        if strategy == "dum (direkt 17:00)":   # plug in at ~17:00 local, charge at full power straight back to 60 %
+            ch = {h: 0.0 for h in H}; need = TARGET - e
+            for h in [h for h in known if h >= f"{d}T16" and px[h] < AWAY]:
+                if need <= 0: break
+                ch[h] = min(RATE, need); need -= ch[h]
+        elif strategy == "deadline 07:30":   # tonight only: charge back to 60 % between 17:00 and 06:00 UTC
             win = [h for h in known if f"{d}T16" <= h <= f"{d + dt.timedelta(days=1)}T05"]
             ch = {h: 0.0 for h in H}; need = TARGET - e
             for h in sorted(win, key=lambda h: px[h]):
@@ -77,7 +86,7 @@ def simulate(px, fcs, strategy, days):
             ch = plan(hs, pr, e, use)
         for h in H[:24]:   # execute the first 24 h, then re-plan
             if h in px:
-                q = ch.get(h, 0.0); cost += q * (px[h] * VAT + ADD); kwh += q; e += q
+                q = ch.get(h, 0.0); cost += q * (real[h] * VAT + ADD); kwh += q; e += q
             e -= use.get(h, 0); global LOW; LOW = min(LOW, e)
     return cost, kwh, e
 
@@ -101,8 +110,8 @@ if __name__ == "__main__":
     else: fcs = forecasts(px, wx, days); json.dump({str(k): v for k, v in fcs.items()}, open(fcf, "w"))
     base = None
     print(f"EV-laddning {days[0]} – {days[-1]}, {KWH_YEAR} kWh/år, {RATE} kW, batteri {CAP} kWh (25–90 %):")
-    for s in ("deadline 07:30", "utan deadline, kända priser", "regel (automationen)", "med prognos", "perfekt framförhållning"):
-        global LOW; LOW = 1e9
+    for s in ("dum (direkt 17:00)", "deadline 07:30", "utan deadline, kända priser", "regel (automationen)", "med prognos", "perfekt framförhållning"):
+        LOW = 1e9
         cost, kwh, e = simulate(px, fcs, s, days)
         cost += (TARGET - e) * 1.2   # settle a different end level at ~1.20 kr/kWh so strategies compare fairly
         base = base or cost
