@@ -1,0 +1,28 @@
+{
+ "config": {
+  "step": {
+   "user": {
+    "title": "Elprisprognos",
+    "description": "7-day spot price forecast. The first start downloads ~4 years of prices and weather (a few minutes).",
+    "data": {
+     "area": "Price area",
+     "vat": "VAT (%)",
+     "additional_costs": "Additional costs per kWh incl. VAT (energy tax, transfer, supplier fee)"
+    }
+   }
+  },
+  "abort": {
+   "already_configured": "This price area is already set up"
+  }
+ },
+ "options": {
+  "step": {
+   "init": {
+    "data": {
+     "vat": "VAT (%)",
+     "additional_costs": "Additional costs per kWh incl. VAT"
+    }
+   }
+  }
+ }
+}

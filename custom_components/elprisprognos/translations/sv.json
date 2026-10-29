@@ -1,0 +1,28 @@
+{
+ "config": {
+  "step": {
+   "user": {
+    "title": "Elprisprognos",
+    "description": "Prognos för spotpriset 7 dagar framåt. Första starten laddar ner ~4 år priser och väder (några minuter).",
+    "data": {
+     "area": "Elområde",
+     "vat": "Moms (%)",
+     "additional_costs": "Påslag per kWh inkl. moms (energiskatt, överföring, elhandelspåslag)"
+    }
+   }
+  },
+  "abort": {
+   "already_configured": "Elområdet är redan tillagt"
+  }
+ },
+ "options": {
+  "step": {
+   "init": {
+    "data": {
+     "vat": "Moms (%)",
+     "additional_costs": "Påslag per kWh inkl. moms"
+    }
+   }
+  }
+ }
+}

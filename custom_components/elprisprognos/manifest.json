@@ -1,0 +1,16 @@
+{
+ "domain": "elprisprognos",
+ "name": "Elprisprognos",
+ "version": "0.1.0",
+ "config_flow": true,
+ "documentation": "https://github.com/AlexAsplund/ha-elprognos",
+ "integration_type": "service",
+ "iot_class": "cloud_polling",
+ "codeowners": [
+  "@AlexAsplund"
+ ],
+ "requirements": [
+  "numpy"
+ ],
+ "issue_tracker": "https://github.com/AlexAsplund/ha-elprognos/issues"
+}
