@@ -33,7 +33,7 @@ def _levels(hours, ch, e0, use):
         e += ch[h] - use.get(h, 0); yield e
 
 def rule_limit(soc, known, fc, d, trip=60, daily=100 * DAILY / CAP):
-    """Same rule as automations/ev9_ai_laddniva.json (spot prices): charge enough now to last until the first forecast day
+    """Rule for a charge-limit automation (spot prices): charge enough now to last until the first forecast day
     whose 4 cheapest hours are ≥ 20 % below the 4 cheapest known ones (+10 % margin), never below the trip level, max 90 %."""
     cheap = lambda v: sum(sorted(v)[:4]) / min(4, len(v))
     days = {}
