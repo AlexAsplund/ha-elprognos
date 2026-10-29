@@ -34,16 +34,19 @@ def _levels(hours, ch, e0, use):
     for h in hours:
         e += ch[h] - use.get(h, 0); yield e
 
-def rule_limit(soc, known, fc, d, trip=60, daily=100 * DAILY / CAP):
+RESERVE = 25   # % the rule wants left when the cheaper day comes (plus a 10 % margin)
+
+def rule_limit(soc, known, fc, d, trip=60, daily=None):
     """Rule for a charge-limit automation (spot prices): charge enough now to last until the first forecast day
-    whose 4 cheapest hours are ≥ 20 % below the 4 cheapest known ones (+10 % margin), never below the trip level, max 90 %."""
+    whose 4 cheapest hours are ≥ 20 % below the 4 cheapest known ones (RESERVE + 10 % margin), never below the trip level, max 90 %."""
+    daily = daily or 100 * DAILY / CAP
     cheap = lambda v: sum(sorted(v)[:4]) / min(4, len(v))
     days = {}
     for h, v in fc.items(): days.setdefault(h[:10], []).append(v)
     if len(known) < 4 or not days: return trip
     k = cheap(known)
     n = next((n for n, v in sorted(((dt.date.fromisoformat(x) - d).days, cheap(v)) for x, v in days.items()) if n <= 6 and v < 0.8 * k), 7)
-    return max(trip, min(90, math.ceil((25 + (n - 1) * daily + 10) / 10) * 10))
+    return max(trip, min(90, math.ceil((RESERVE + (n - 1) * daily + 10) / 10) * 10))
 
 def simulate(px, fcs, strategy, days, real=None):
     """`px` drives the decisions (hours the car is away can be priced out), `real` (default px) is what gets paid."""
@@ -102,7 +105,7 @@ def forecasts(px, wx, days):
     return fc
 
 if __name__ == "__main__":
-    px, wx = run.data(dt.date.today() - dt.timedelta(days=1))
+    px, wx, _ = run.data(dt.date.today() - dt.timedelta(days=1))
     end = dt.date.today() - dt.timedelta(days=9)   # leave a week of real prices after the last plan
     days = [end - dt.timedelta(days=i) for i in range(365, 0, -1)]
     fcf = os.path.join(run.CACHE, f"savings_fc_{days[0]}.json")   # the weekly refits take minutes: reuse them
