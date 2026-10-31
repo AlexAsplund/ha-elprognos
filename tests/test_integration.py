@@ -51,6 +51,15 @@ async def test_setup_and_forecast(hass):
     assert any(r["forecast"] for r in rows) and any(not r["forecast"] for r in rows)
     r = rows[0]; assert abs(r["value"] - (r["spot"] * 1.25 + 0.71)) < 0.002
     assert await hass.config_entries.async_unload(entry.entry_id)
+    # a restart reuses the saved model (refit only when it is 30 days old) and shows the saved forecast before the first refresh
+    with patch.object(P, "prices", fake_prices), patch.object(P, "weather", fake_weather), patch.object(P, "umm", fake_umm), \
+         patch.object(P, "fit", side_effect=AssertionError("refit after restart")):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        s = hass.states.get("sensor.elpris_prognos_se3")
+        assert s.state not in ("unavailable", "unknown") and s.attributes["forecast"], s
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get("sensor.elpris_prognos_se3").state not in ("unavailable", "unknown")
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 async def test_config_flow(hass):
     r = await hass.config_entries.flow.async_init("elprisprognos", context={"source": "user"})

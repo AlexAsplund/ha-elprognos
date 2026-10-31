@@ -1,6 +1,6 @@
 """Elprisprognos: spot price forecast 7 days ahead for the Swedish price areas."""
 from __future__ import annotations
-import datetime as dt, logging, os
+import datetime as dt, json, logging, os
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -12,11 +12,23 @@ _LOG = logging.getLogger(__name__)
 PLATFORMS = ["sensor"]
 
 class Coordinator(DataUpdateCoordinator):
-    """Hourly: refresh prices + weather forecast and predict. Daily: refit the model (a few seconds in the executor)."""
+    """Hourly: refresh prices + weather forecast and predict. Every 30 days: refit the model (downloads the weather history, then a few seconds in the executor)."""
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         super().__init__(hass, _LOG, name=DOMAIN, update_interval=dt.timedelta(hours=1))
         self.entry, self.model, self.fitted, self.wx_hist, self.umm = entry, None, None, {}, []
         self.cache = hass.config.path(".storage", DOMAIN); os.makedirs(self.cache, exist_ok=True)
+        self.state_file = os.path.join(self.cache, f"state_{entry.data[CONF_AREA]}.json")
+
+    def load_state(self):
+        """Last model + forecast from before a restart: the sensor has values at once and the fit is reused until it is 30 days old."""
+        try: s = json.load(open(self.state_file))
+        except (OSError, ValueError): return
+        self.model, self.fitted, self.data = s["model"], dt.date.fromisoformat(s["fitted"]), s["data"]
+
+    def _save_state(self, data):
+        tmp = self.state_file + ".tmp"
+        with open(tmp, "w") as f: json.dump({"model": self.model, "fitted": self.fitted.isoformat(), "data": data}, f)
+        os.replace(tmp, self.state_file)
 
     def _work(self):
         P.ZONE = self.entry.data[CONF_AREA]
@@ -25,7 +37,7 @@ class Coordinator(DataUpdateCoordinator):
         px.update(P.prices(today, today + dt.timedelta(days=1)))
         try: self.umm = P.umm()   # reactor outages: news within the hour matters
         except Exception as e: _LOG.warning("Nord Pool UMM unavailable, keeping the last %d messages: %s", len(self.umm), e)
-        if self.model is None or self.fitted != today:
+        if self.model is None or (today - self.fitted).days >= 30:   # the price level is applied at predict time, so an older fit still tracks prices
             start = dt.date.fromisoformat(max(HISTORY_START, *(k[:10] for k in self.wx_hist))) if self.wx_hist else dt.date.fromisoformat(HISTORY_START)
             self.wx_hist.update(P.weather(start, today - dt.timedelta(days=1)))
             self.model, self.fitted = P.fit(px, P.add_nuclear(self.wx_hist, self.umm)), today
@@ -33,10 +45,14 @@ class Coordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         rows, n = await self.hass.async_add_executor_job(self._work)
-        return {"rows": rows, "model_hours": n, "updated": dt_util.now().isoformat(timespec="seconds")}
+        data = {"rows": rows, "model_hours": n, "updated": dt_util.now().isoformat(timespec="seconds")}
+        try: await self.hass.async_add_executor_job(self._save_state, data)
+        except (OSError, TypeError) as e: _LOG.warning("Could not save the forecast state: %s", e)
+        return data
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coord = Coordinator(hass, entry)
+    await hass.async_add_executor_job(coord.load_state)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coord
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # first run downloads ~4 years of prices and weather (minutes): don't hold up HA's startup
