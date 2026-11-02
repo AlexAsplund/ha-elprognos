@@ -105,7 +105,7 @@ def forecasts(px, wx, days):
     return fc
 
 if __name__ == "__main__":
-    px, wx, _ = run.data(dt.date.today() - dt.timedelta(days=1))
+    px, wx, *_ = run.data(dt.date.today() - dt.timedelta(days=1))
     end = dt.date.today() - dt.timedelta(days=9)   # leave a week of real prices after the last plan
     days = [end - dt.timedelta(days=i) for i in range(365, 0, -1)]
     fcf = os.path.join(run.CACHE, f"savings_fc_{days[0]}.json")   # the weekly refits take minutes: reuse them

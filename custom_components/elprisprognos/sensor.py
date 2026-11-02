@@ -1,12 +1,14 @@
 from __future__ import annotations
 import datetime as dt
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.const import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import prognos as P
 from .const import CONF_ADD, CONF_AREA, CONF_VAT, DOMAIN
 
 async def async_setup_entry(hass, entry, add):
-    add([Forecast(hass.data[DOMAIN][entry.entry_id], entry)])
+    coord = hass.data[DOMAIN][entry.entry_id]
+    add([Forecast(coord, entry), Status(coord, entry)])
 
 class Forecast(CoordinatorEntity, SensorEntity):
     """State: mean price of the first forecast day. Attribute `forecast`: every hour, published prices first, then the model."""
@@ -40,3 +42,30 @@ class Forecast(CoordinatorEntity, SensorEntity):
         rows = self._rows(); first = next((r for r in rows if r["forecast"]), None)
         d = self.coordinator.data or {}
         return {"forecast": rows, "forecast_from": first and first["start"], "model_hours": d.get("model_hours"), "updated": d.get("updated")}
+
+class Status(CoordinatorEntity, SensorEntity):
+    """State: the model behind the forecast ("v2", or "ridge" when v2 is missing/failing) or "error" when the last update failed.
+    Attributes: weather source, last fit (date, seconds), neighbour prices known until, the last problem, last update."""
+    _attr_has_entity_name, _attr_icon, _attr_entity_category = True, "mdi:list-status", EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coord, entry):
+        super().__init__(coord)
+        self._attr_unique_id = f"{entry.entry_id}_status"
+        self._attr_name = f"Elpris prognos {entry.data[CONF_AREA]} status"
+
+    @property
+    def available(self):
+        return True
+
+    @property
+    def native_value(self):
+        if not self.coordinator.last_update_success: return "error"
+        return ((self.coordinator.data or {}).get("status") or {}).get("model", "starting")
+
+    @property
+    def extra_state_attributes(self):
+        d = self.coordinator.data or {}; s = d.get("status") or {}
+        err = self.coordinator.last_exception
+        return {"weather": s.get("weather"), "fitted": s.get("fitted"), "fit_seconds": s.get("fit_seconds"),
+                "neighbour_prices_until": s.get("neighbour_prices_until"), "problem": str(err) if err and not self.coordinator.last_update_success else s.get("problem"),
+                "updated": d.get("updated")}

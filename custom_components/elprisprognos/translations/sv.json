@@ -7,7 +7,8 @@
     "data": {
      "area": "Elområde",
      "vat": "Moms (%)",
-     "additional_costs": "Påslag per kWh inkl. moms (energiskatt, överföring, elhandelspåslag)"
+     "additional_costs": "Påslag per kWh inkl. moms (energiskatt, överföring, elhandelspåslag)",
+     "entsoe_token": "ENTSO-E-token (valfri: utan den hämtas grannländernas priser från energy-charts.info)"
     }
    }
   },
@@ -20,7 +21,8 @@
    "init": {
     "data": {
      "vat": "Moms (%)",
-     "additional_costs": "Påslag per kWh inkl. moms"
+     "additional_costs": "Påslag per kWh inkl. moms",
+     "entsoe_token": "ENTSO-E-token (valfri: utan den hämtas grannländernas priser från energy-charts.info)"
     }
    }
   }

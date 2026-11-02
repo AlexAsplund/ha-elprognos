@@ -2,11 +2,12 @@ from __future__ import annotations
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
-from .const import AREAS, CONF_ADD, CONF_AREA, CONF_VAT, DOMAIN
+from .const import AREAS, CONF_ADD, CONF_AREA, CONF_TOKEN, CONF_VAT, DOMAIN
 
 def _schema(d):
     return {vol.Required(CONF_VAT, default=d.get(CONF_VAT, 25)): vol.Coerce(float),
-            vol.Required(CONF_ADD, default=d.get(CONF_ADD, 0.0)): vol.Coerce(float)}
+            vol.Required(CONF_ADD, default=d.get(CONF_ADD, 0.0)): vol.Coerce(float),
+            vol.Optional(CONF_TOKEN, default=d.get(CONF_TOKEN, "")): str}
 
 class Flow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1

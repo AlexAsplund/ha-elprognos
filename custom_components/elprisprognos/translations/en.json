@@ -7,7 +7,8 @@
     "data": {
      "area": "Price area",
      "vat": "VAT (%)",
-     "additional_costs": "Additional costs per kWh incl. VAT (energy tax, transfer, supplier fee)"
+     "additional_costs": "Additional costs per kWh incl. VAT (energy tax, transfer, supplier fee)",
+     "entsoe_token": "ENTSO-E security token (optional: without one, neighbour prices come from energy-charts.info)"
     }
    }
   },
@@ -20,7 +21,8 @@
    "init": {
     "data": {
      "vat": "VAT (%)",
-     "additional_costs": "Additional costs per kWh incl. VAT"
+     "additional_costs": "Additional costs per kWh incl. VAT",
+     "entsoe_token": "ENTSO-E security token (optional: without one, neighbour prices come from energy-charts.info)"
     }
    }
   }
