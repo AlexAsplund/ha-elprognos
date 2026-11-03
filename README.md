@@ -2,6 +2,11 @@
 
 Home Assistant integration that forecasts Nordic spot electricity prices (SE1–SE4) up to 7 days ahead.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/forecast_dark.png">
+  <img alt="Published Nord Pool prices followed by the 7-day forecast" src="docs/forecast_light.png" width="760">
+</picture>
+
 ## Install
 
 HACS → Custom repositories → `https://github.com/AlexAsplund/ha-elprognos` (Integration), or copy `custom_components/elprisprognos` to your `config/custom_components/`. Restart, then add **Elprisprognos** under Settings → Devices & services. You choose the price area, the VAT (default 25 %) and any additional costs per kWh (grid fee, energy tax, …).
@@ -15,6 +20,34 @@ The `forecast` attribute holds one row per hour: `{start, value, spot, forecast}
 - `forecast` is false for prices that are already published and true for model output.
 
 It works with apexcharts-card `data_generator`, or in automations that plan around the cheapest coming days.
+
+The chart above as an [apexcharts-card](https://github.com/RomRider/apexcharts-card):
+
+```yaml
+type: custom:apexcharts-card
+header: {show: true, title: Elpris prognos SE3, show_states: true}
+graph_span: 8d
+span: {start: hour}
+now: {show: true, label: Now}
+yaxis: [{min: 0, decimals: 1}]
+series:
+  - entity: sensor.elpris_prognos_se3
+    name: Published (Nord Pool)
+    type: line
+    curve: stepline
+    color: "#fb8c00"
+    show: {in_header: false}
+    data_generator: |
+      return entity.attributes.forecast.filter(e => !e.forecast).map(e => [new Date(e.start).getTime(), e.value]);
+  - entity: sensor.elpris_prognos_se3
+    name: Forecast
+    type: line
+    curve: stepline
+    color: "#8e24aa"
+    stroke_dash: 5
+    data_generator: |
+      return entity.attributes.forecast.filter(e => e.forecast).map(e => [new Date(e.start).getTime(), e.value]);
+```
 
 ## How it works
 
