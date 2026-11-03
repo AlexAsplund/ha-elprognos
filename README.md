@@ -1,6 +1,6 @@
 # Elprisprognos
 
-Home Assistant integration that forecasts Nordic spot electricity prices (SE1–SE4) up to 7 days ahead.
+A Home Assistant integration. It forecasts the Nordic spot price of electricity (SE1–SE4) for the next 7 days.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/forecast_dark.png">
@@ -9,19 +9,34 @@ Home Assistant integration that forecasts Nordic spot electricity prices (SE1–
 
 ## Install
 
-HACS → Custom repositories → `https://github.com/AlexAsplund/ha-elprognos` (Integration), or copy `custom_components/elprisprognos` to your `config/custom_components/`. Restart, then add **Elprisprognos** under Settings → Devices & services. You choose the price area, the VAT (default 25 %) and any additional costs per kWh (grid fee, energy tax, …).
+1. In HACS, add the custom repository `https://github.com/AlexAsplund/ha-elprognos` (type: Integration).
+   Or copy `custom_components/elprisprognos` to `config/custom_components/`.
+2. Restart Home Assistant.
+3. Go to **Settings → Devices & services** and add **Elprisprognos**.
+4. Select the price area. Set the VAT (default 25 %) and the additional costs per kWh (grid fee, energy tax).
 
-## Sensor
+The first start downloads the price and weather history and trains the models. This takes some minutes.
 
-`sensor.elpris_prognos_<area>`: the state is the mean price of the first forecast day.
+## Sensors
 
-The `forecast` attribute holds one row per hour: `{start, value, spot, forecast}`.
-- `value` is spot × (1 + VAT) + additional costs.
-- `forecast` is false for prices that are already published and true for model output.
+| Entity | State | Attributes |
+|---|---|---|
+| `sensor.elpris_prognos_<area>` | Mean price of the first forecast day (SEK/kWh) | `forecast`: one row per hour |
+| `sensor.elpris_prognos_<area>_status` | Model in use: `v2`, `ridge`, `error` or `starting` | Weather source, last fit, neighbour prices until, last problem |
 
-It works with apexcharts-card `data_generator`, or in automations that plan around the cheapest coming days.
+Each row in `forecast` has these keys:
 
-The chart above as an [apexcharts-card](https://github.com/RomRider/apexcharts-card):
+| Key | Value |
+|---|---|
+| `start` | Start of the hour |
+| `spot` | Spot price (SEK/kWh) |
+| `value` | spot × (1 + VAT) + additional costs |
+| `forecast` | `false` = published price, `true` = forecast |
+
+Use the attribute in charts or in automations that find the cheapest days.
+
+<details>
+<summary>The chart above as an <a href="https://github.com/RomRider/apexcharts-card">apexcharts-card</a></summary>
 
 ```yaml
 type: custom:apexcharts-card
@@ -48,37 +63,63 @@ series:
     data_generator: |
       return entity.attributes.forecast.filter(e => e.forecast).map(e => [new Date(e.start).getTime(), e.value]);
 ```
+</details>
+
+## Accuracy
+
+Backtest on SE3: 40 forecasts over one year, days 2–7 ahead.
+
+| Method | Mean error (öre/kWh) |
+|---|---|
+| **v2 model** | **19.9** |
+| v1 ridge model | 25.0 |
+| Same hour last week | 40–41 |
+| 7-day mean | 40–41 |
+
+The daily mean prices correlate 0.88 with the real prices. Days 5–7 are a little optimistic, because the training uses archived short-lead weather forecasts.
 
 ## How it works
 
-`prognos.py` holds the model and the data fetching, `gbm.py` a small gradient-boosted-trees implementation; stdlib + numpy only.
+The forecast updates every hour. The models train again each day after 02:00.
 
-Data (all keyless by default):
-- Prices: elprisetjustnu.se (from 2022-11).
-- Neighbour day-ahead prices (DE-LU, DK1, FI, NO1, NO2): energy-charts.info. Optionally set an ENTSO-E security token in the integration's options to fetch them from the ENTSO-E Transparency Platform instead (energy-charts is then the fallback).
-- Weather: Open-Meteo, at the Swedish/Nordic wind, temperature and sun points plus 14 points in the neighbour zones (wind, temperature, sun), in one request. If it is down, the live forecast falls back to MET Norway (api.met.no) for every point: 10 m wind × 1.8 and clear-sky sun × cloud cover, which gives the same 7-day forecast within ~12 öre.
-  - Training uses archived forecasts; prediction uses the live forecast.
-- Outages: Nord Pool UMM (REMIT messages, no API key): Swedish reactors, transmission limits on the SE3 links (SE2/SE4/NO1/FI/DK1) and Finnish reactors. Training replays every message version as it was known when each forecast would have been made.
+**Data.** No API keys are necessary.
 
-Model (v2):
-- Stage 1: one tree model per neighbour zone forecasts its price from its own weather, the calendar and its recent price level.
-- Stage 2: a tree model (Huber loss, monotone in wind, temperature and outages) forecasts the Swedish price from the stage-1 forecasts, the weather, hour/weekday/holiday/season, the recent Swedish and neighbour price levels, and MW of reactors and lines out. Each training hour appears once per lead time 2–7 days, with the price levels and outages as they were known that many days before.
-- If the neighbour prices are unavailable, the integration logs a warning and uses the v1 ridge regression (hour/weekday/season + weather + reactors out, every feature also scaled by the last 7 days' price level).
-- The models refit daily, on the first update after 02:00 (the v2 fit takes ~2 min on one desktop CPU core and ~0.5 GB RAM at its peak; a Raspberry Pi is several times slower: lower `ROUNDS`/`LEADS` in `prognos.py` if that hurts). The forecast updates hourly with the last fit. Models, the weather history, the neighbour prices and the last forecast are kept in `.storage/elprisprognos/`, so a restart neither refits nor waits for data.
-- Tuned on SE3; SE1, SE2 and SE4 use the same inputs (the same neighbours and SE3 links).
+| Data | Source |
+|---|---|
+| Swedish prices (from 2022-11) | elprisetjustnu.se |
+| Neighbour prices (DE-LU, DK1, FI, NO1, NO2) | energy-charts.info, or ENTSO-E with an optional token |
+| Weather: wind, temperature, sun | Open-Meteo. If it is not available: MET Norway |
+| Reactor and transmission outages | Nord Pool UMM |
 
-Backtest (SE3, the same 40 forecasts over a year, days 2–7 ahead): mean error 19.9 öre/kWh for v2 against 25.0 for the ridge model, and 40–41 öre for "same hour last week" or "the 7-day mean". Daily averages correlate 0.88 with the real prices (ridge 0.86). Training uses archived short-lead weather forecasts, so days 5–7 come out a bit optimistic. Outages and neighbour price levels are replayed as they were known when each forecast was made.
+**Model (v2).** Gradient-boosted trees, in two stages:
 
-Licences: energy-charts.info data is for private and internal use only. The integration fetches it on each install for its owner's own use and doesn't redistribute it; use the ENTSO-E option if that doesn't fit your use. Open-Meteo (CC BY 4.0), MET Norway (CC BY 4.0), Nord Pool UMM and ENTSO-E data are under their providers' terms.
+1. One model for each neighbour zone forecasts the price of that zone.
+2. One model forecasts the Swedish price. It uses the neighbour forecasts, the weather, the calendar, the recent price levels and the outages.
+
+The training uses only the data that was known when each forecast was made. If the neighbour prices are not available, the integration uses the v1 ridge model and logs a warning.
+
+**Resources.** One training run takes approximately 2 minutes on one desktop CPU core and 0.5 GB RAM. A Raspberry Pi is slower. To make it faster, decrease `ROUNDS` or `LEADS` in `prognos.py`.
+
+**Storage.** The models, the data and the last forecast are in `.storage/elprisprognos/`. After a restart, the sensor shows the last forecast immediately.
+
+**Price areas.** The model is tuned on SE3. SE1, SE2 and SE4 use the same inputs.
 
 ## Scripts
 
-- `python3 run.py backtest`: reproduces the numbers above (v2 and ridge; `WORKERS=n` runs the cuts in parallel, each v2 fit takes a couple of minutes).
-- `python3 savings.py`: simulates a year of EV charging: plain charging on arrival, fixed overnight deadline, known prices only, a simple forecast rule for a charge-limit automation, full planning with the forecast, and perfect foresight. Hours the car is away can be priced out (`AWAY`) to model a commuter.
-- `python3 run.py publish`: alternative to the integration. It posts `sensor.elpris_prognos` over the REST API and needs `HA_URL` and `HA_ACCESS_TOKEN` in the environment.
+| Command | Function |
+|---|---|
+| `python3 run.py backtest` | Makes the backtest above again. `WORKERS=n` runs it in parallel. |
+| `python3 savings.py` | Simulates one year of EV charging with different strategies. |
+| `python3 run.py publish` | Sends the forecast to Home Assistant through the REST API, without the integration. Set `HA_URL` and `HA_ACCESS_TOKEN`. |
 
 ## Tests
 
 ```
 uv run --python 3.13 --with pytest-homeassistant-custom-component --with numpy pytest -q
 ```
+
+## Licences
+
+- energy-charts.info: private and internal use only. Each installation gets the data for its owner. The integration does not distribute it. If this is not applicable to you, use the ENTSO-E token.
+- Open-Meteo and MET Norway: CC BY 4.0.
+- Nord Pool UMM and ENTSO-E: the terms of the provider.
