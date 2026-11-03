@@ -71,7 +71,7 @@ Backtest on SE3: 40 forecasts over one year, days 2–7 ahead.
 
 | Method | Mean error (öre/kWh) |
 |---|---|
-| **v2 model** | **19.9** |
+| **v2 model** | **19.7** |
 | v1 ridge model | 25.0 |
 | Same hour last week | 40–41 |
 | 7-day mean | 40–41 |
@@ -94,7 +94,7 @@ The forecast updates every hour. The models train again each day after 02:00.
 **Model (v2).** Gradient-boosted trees, in two stages:
 
 1. One model for each neighbour zone forecasts the price of that zone.
-2. One model forecasts the Swedish price. It uses the neighbour forecasts, the weather, the calendar, the recent price levels and the outages.
+2. One model forecasts the Swedish price. It uses the neighbour forecasts, the weather, the calendar, the sun position, the recent price levels and daily swings, and the outages.
 
 The training uses only the data that was known when each forecast was made. If the neighbour prices are not available, the integration uses the v1 ridge model and logs a warning.
 

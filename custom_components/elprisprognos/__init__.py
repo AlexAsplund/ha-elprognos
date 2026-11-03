@@ -30,6 +30,7 @@ class Coordinator(DataUpdateCoordinator):
         self.model, self.data, self.fit_seconds = s["model"], s["data"], s.get("fit_seconds")
         try: self.model2, self.fitted = json.load(open(self.model_file)), dt.date.fromisoformat(s["fitted"])
         except (OSError, ValueError): return   # state from 0.1 (ridge only): refit now
+        if self.model2.get("v") != P.V2: self.model2, self.fitted = None, None   # older features: refit now
         self.wx_hist = self._recent(self._load_wx())
 
     def _load_wx(self):

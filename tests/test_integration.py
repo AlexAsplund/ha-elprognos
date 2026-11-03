@@ -133,3 +133,7 @@ def test_metno_fallback():   # Open-Meteo down → the live forecast comes from 
         rows = P.forecast(model, px)
     assert any(f for _, _, f in rows)
     assert P._sun_clear(dt.datetime(2026, 6, 21, 11, tzinfo=dt.timezone.utc), 51, 10) > 750 and P._sun_clear(dt.datetime(2026, 12, 21, 0, tzinfo=dt.timezone.utc), 59, 15) == 0
+
+def test_sunpos():   # Stockholm: ~18.5 h day at midsummer, ~6 h at midwinter; sun up at noon, down at midnight
+    s = P._sunpos(dt.datetime(2026, 6, 21, 11, tzinfo=dt.timezone.utc)); w = P._sunpos(dt.datetime(2026, 12, 21, 23, tzinfo=dt.timezone.utc))
+    assert 18 < s[2] + s[1] < 19.5 and s[0] > 0.8 and 5.5 < w[3] < 7 and w[0] < 0

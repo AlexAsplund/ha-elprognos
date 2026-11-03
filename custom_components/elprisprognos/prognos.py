@@ -175,6 +175,15 @@ def _sun_clear(t, lat, lon):
     se = math.sin(math.radians(lat)) * math.sin(decl) + math.cos(math.radians(lat)) * math.cos(decl) * math.cos(ha)
     return 1098 * se * math.exp(-0.057 / se) if se > 0.01 else 0.0
 
+def _sunpos(t, lat=59.33, lon=18.07):
+    """Sun at Stockholm for the hour starting at t (aware): sin(elevation) at its middle, hours since sunrise, hours to sunset, day length."""
+    u = t.astimezone(dt.timezone.utc); n = u.timetuple().tm_yday; h = u.hour + 0.5
+    decl = math.radians(23.44) * math.sin(2 * math.pi * (284 + n) / 365); la = math.radians(lat)
+    se = math.sin(la) * math.sin(decl) + math.cos(la) * math.cos(decl) * math.cos(math.radians(15 * (h + lon / 15 - 12)))
+    h0 = math.degrees(math.acos(max(-1.0, min(1.0, -math.tan(la) * math.tan(decl))))) / 15   # half the day length
+    noon = 12 - lon / 15
+    return [se, h - (noon - h0), (noon + h0) - h, 2 * h0]
+
 def weather_metno(pts=None):
     """Live forecast from MET Norway (api.met.no), the fallback when Open-Meteo is down. Same keys as weather(forecast=True).
     It has no 100 m wind or irradiance, so: wind 10 m × 1.8 (gives the same 7-day forecast as Open-Meteo within 12 öre, 2026-11), sun = clear sky × (1 − 0.75·cloud³·⁴) (Kasten–Czeplak).
@@ -204,7 +213,8 @@ ROUNDS, ROUNDS1, LEADS = 800, 200, range(2, 8)   # stage-2 rounds, stage-1 round
 T0 = dt.datetime(2023, 1, 1)                      # hour 0 of the trend feature
 TRANS = ["SE2-SE3", "SE4-SE3", "SE3-SE4", "NO1-SE3", "SE3-NO1", "FI-SE3", "SE3-FI", "DK1-SE3", "SE3-DK1"]   # UMM in-out area pairs
 # stage-2 monotone constraints by column (see _x2): less wind and warmth → higher price, more cold / reactors / lines out → higher
-MONO = [0] * 4 + [-1] * 14 + [1] * 3 + [0, 0, 1, 0, 0] + [0] * 6 + [0] * 5 + [1] * (len(TRANS) + 1) + [0] * 5
+MONO = [0] * 8 + [-1] * 14 + [1] * 3 + [0, 0, 1, 0, 0] + [0] * 8 + [0] * 5 + [1] * (len(TRANS) + 1) + [0] * 5
+V2 = 3   # stored-model format: bump when the features change, a saved model of another version is refitted at once
 
 def _T(h): return dt.datetime.strptime(h, "%Y-%m-%dT%H")
 
@@ -331,9 +341,12 @@ def _frame(px, wx, nb, a, b):
         W, Pw = win(raw[:, 9], 168), win(p, 168)   # mean of the 7 days' calmer half: the price when the wind doesn't help
         calm = (W < np.nanmedian(W, 1)[:, None]) & ~np.isnan(Pw)
         C7 = np.where(calm.any(1), np.where(calm, Pw, 0).sum(1) / np.maximum(calm.sum(1), 1), L7)
+        p24 = win(p, 24); R24 = np.nanmax(p24, 1) - np.nanmin(p24, 1)                 # range of the last 24 h
+        S7 = np.nan_to_num(_mean(R24, 168), nan=0.5)                                   # mean daily swing, last 7 days
+        H7 = np.nan_to_num(np.nanmean(np.stack([_lag(p, d) for d in range(1, 8)], 1), 1), nan=0.8) - L7   # same hour, last 7 days
     nbp = np.array([[nb.get(z, {}).get(h, np.nan) for z in NEIGHBOURS] for h in G])
-    return {"t0": t0, "n": n, "G": G, "price": p, "raw": raw, "lev": np.stack([L7, L28, M7, C7], 1),
-            "cal": np.array([[t.hour, t.weekday(), t.weekday() >= 5, t.date() in hol] for t in loc], float),
+    return {"t0": t0, "n": n, "G": G, "price": p, "raw": raw, "lev": np.stack([L7, L28, M7, C7, S7, H7], 1),
+            "cal": np.array([[t.hour, t.weekday(), t.weekday() >= 5, t.date() in hol] + _sunpos(t) for t in loc], float),
             "ts": (np.arange(n) + (t0 - T0).total_seconds() / 3600)[:, None], "hod": (np.arange(n) + t0.hour) % 24,
             "day": t0.toordinal() + (np.arange(n) + t0.hour) // 24,
             "nbp": nbp, "nbl": np.stack([_mean(nbp[:, c], 168, 43) for c in range(len(NEIGHBOURS))], 1),
@@ -363,7 +376,7 @@ def fit2(px, wx, nb, msgs, rounds=None, leads=None):
         ki = np.maximum(tr - f["hod"][tr] - 24 * (d - 1) - 1, 0)   # T23 UTC d days before
         X.append(_x2(f, tr, np.full(len(tr), float(d)), _lag(f["lev"], d)[tr], f["nbl"][ki], outages(msgs, f["t0"], n, f["day"] - d)[tr], s1))
     X = np.concatenate(X)
-    return {"v": 2, "n": len(tr), "leads": [min(leads), max(leads)], "s1": m1,
+    return {"v": V2, "n": len(tr), "leads": [min(leads), max(leads)], "s1": m1,
             "s2": gbm.train(X, np.tile(f["price"][tr], len(leads)), rounds=rounds, huber=0.3, mono=MONO)}
 
 def predict2(model, hours, wx, px, nb, msgs, asof=math.inf):
@@ -375,7 +388,9 @@ def predict2(model, hours, wx, px, nb, msgs, asof=math.inf):
     if np.isnan(nbl).any(): raise ValueError("no recent prices for " + ", ".join(z for z, v in zip(NEIGHBOURS, nbl) if np.isnan(v)))
     s1 = np.stack([gbm.predict(model["s1"][z], _x1(f, i, z, np.full(len(i), nbl[c]))) for c, z in enumerate(NEIGHBOURS)], 1)
     lead = np.clip(f["day"][i] - f["day"][k], *model["leads"]).astype(float)
-    X = _x2(f, i, lead, np.tile(f["lev"][k], (len(i), 1)), np.tile(nbl, (len(i), 1)), outages(msgs, f["t0"], f["n"], asof)[i], s1)
+    lev = np.tile(f["lev"][k], (len(i), 1))
+    lev[:, -1] = f["lev"][k - (f["hod"][k] - f["hod"][i]) % 24, -1]   # the latest known same-hour profile
+    X = _x2(f, i, lead, lev, np.tile(nbl, (len(i), 1)), outages(msgs, f["t0"], f["n"], asof)[i], s1)
     return dict(zip(hours, gbm.predict(model["s2"], X).tolist()))
 
 def forecast(model, px, msgs=(), v2=None, info=None):
