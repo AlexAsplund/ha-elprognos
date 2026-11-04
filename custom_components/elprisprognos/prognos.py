@@ -240,7 +240,9 @@ def _entsoe(z, a, b, token):
         url = (f"https://web-api.tp.entsoe.eu/api?securityToken={token}&documentType=A44&in_Domain={NEIGHBOURS[z]}&out_Domain={NEIGHBOURS[z]}"
                f"&periodStart={a:%Y%m%d}0000&periodEnd={e + dt.timedelta(days=1):%Y%m%d}0000")
         with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r: root = ET.parse(r).getroot()
-        for per in tag(root, "Period"):
+        sdac = [ts for ts in tag(root, "TimeSeries")   # DE-LU has two auctions: sequence 1 = SDAC (the coupled price), 2 = the second one
+                if all(c.text == "1" for c in tag(ts, "classificationSequence_AttributeInstanceComponent.position"))]
+        for per in (p for ts in sdac for p in tag(ts, "Period")):
             t0, t1 = (dt.datetime.strptime(tag(per, k)[0].text, "%Y-%m-%dT%H:%MZ").replace(tzinfo=dt.timezone.utc) for k in ("start", "end"))
             step = dt.timedelta(minutes={"PT15M": 15, "PT30M": 30, "PT60M": 60}[tag(per, "resolution")[0].text])
             pts, v = {int(tag(p, "position")[0].text): float(tag(p, "price.amount")[0].text) for p in tag(per, "Point")}, None
